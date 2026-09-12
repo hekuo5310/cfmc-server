@@ -36,6 +36,7 @@ import {
 import { handleAuthRequest } from './workers/auth.js';
 import { handleGameWebSocket } from './workers/game.js';
 import { handleApiRequest } from './workers/api.js';
+import { handleSelfTest } from './workers/selftest.js';
 import { PROTOCOL_VERSION } from './protocol/packet-definitions.js';
 import { supportSummary } from './protocol/version-registry.js';
 // Text 规则导入 (wrangler.toml [[rules]] type="Text") — Phase 3 管理面板
@@ -112,6 +113,7 @@ export default {
  * ----------------------------------------------------------------
  * GET  /            服务信息 (协议版本/能力集, 供客户端 Mod 发现服务)
  * GET  /health      健康检查 (负载均衡/监控探针)
+ * GET  /debug/selftest  部署自检 (D1 建表/KV/DO 逐项探测, 排障第一步)
  * GET  /admin       Web 管理面板 (Phase 3)
  * GET  /ws/game     WebSocket 升级 → 验证身份 → 转发给 RegionDO (game.js)
  * ANY  /auth/*      认证服务: 登录/刷新/校验/吊销/皮肤 (auth.js)
@@ -143,7 +145,7 @@ async function route(request, env, url, ctx) {
         plugins: true,       // P4 插件事件总线
         adminPanel: '/admin',
       },
-      endpoints: ['/health', '/ws/game', '/auth/*', '/api/*', '/admin'],
+      endpoints: ['/health', '/ws/game', '/auth/*', '/api/*', '/admin', '/debug/selftest'],
     });
   }
 
@@ -165,6 +167,11 @@ async function route(request, env, url, ctx) {
   // ===== 认证服务 (auth.js: 四种模式, 子提示词 2) =====
   if (pathname.startsWith('/auth/')) {
     return handleAuthRequest(request, env, url);
+  }
+
+  // ===== 部署自检 (selftest.js): D1 建表 / KV / DO 逐项探测, 排障第一步 =====
+  if (pathname === '/debug/selftest' && request.method === 'GET') {
+    return handleSelfTest(request, env);
   }
 
   // ===== Web 管理面板 (Phase 3): 单文件 SPA 由 Worker 直接托管 =====

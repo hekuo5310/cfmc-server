@@ -166,6 +166,24 @@ export class RegionDO {
   async fetch(request) {
     const url = new URL(request.url);
 
+    // 顶层兜底: 任何未捕获异常都以结构化 500 返回 (而非裸异常穿透到调用方,
+    // 否则 game.js 的 stub.fetch 会 reject → Gateway 全局 catch → 玩家只见无上下文的 500)
+    try {
+      return await this.#route(request, url);
+    } catch (err) {
+      logger.error('region_fetch_fail', {
+        path: url.pathname,
+        error: err.message,
+        stack: err.stack?.split('\n').slice(0, 4).join(' | '),
+      });
+      return Response.json(
+        { ok: false, code: 'REGION_INTERNAL_ERROR', message: err.message },
+        { status: 500 }
+      );
+    }
+  }
+
+  async #route(request, url) {
     if (url.pathname === '/connect' && request.headers.get('Upgrade') === 'websocket') {
       return this.#handleConnect(url);
     }

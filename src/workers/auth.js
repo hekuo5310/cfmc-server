@@ -86,7 +86,7 @@ export async function handleAuthRequest(request, env, url) {
   // ---------- POST /auth/invalidate ----------
   if (path === '/auth/invalidate' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
-    if (body.refreshToken) await env.CACHE.delete(`rt:${body.refreshToken}`);
+    if (body.refreshToken && env.CACHE) await env.CACHE.delete(`rt:${body.refreshToken}`);
     return json({ ok: true }); // 幂等: 无论是否存在都返回成功
   }
 
@@ -148,11 +148,14 @@ async function handleLogin(body, env, request) {
     900
   );
   const refreshToken = generateRefreshToken();
-  await env.CACHE.put(
-    `rt:${refreshToken}`,
-    JSON.stringify({ uuid: result.profile.uuid, name: result.profile.name }),
-    { expirationTtl: REFRESH_TTL_SECONDS }
-  );
+  // KV 缺失保护: 绑定异常时跳过 refresh-token 存储 (access 仍可发, 登录不 500)
+  if (env.CACHE) {
+    await env.CACHE.put(
+      `rt:${refreshToken}`,
+      JSON.stringify({ uuid: result.profile.uuid, name: result.profile.name }),
+      { expirationTtl: REFRESH_TTL_SECONDS }
+    );
+  }
 
   // ---------- 用户落库 (offline/skin_server 身份映射持久化) ----------
   upsertUser(env, result.profile).catch(() => {});
@@ -264,6 +267,7 @@ async function loginHybrid(body, username, env) {
 async function handleRefresh(body, env) {
   const token = body.refreshToken;
   if (!token) return err(ERROR_CODES.AUTH_INVALID_TOKEN, '缺少 refreshToken', 400);
+  if (!env.CACHE) return err(ERROR_CODES.AUTH_INVALID_TOKEN, 'KV 绑定不可用, 无法校验 RefreshToken', 503);
 
   const stored = await env.CACHE.get(`rt:${token}`);
   if (!stored) return err(ERROR_CODES.AUTH_INVALID_TOKEN, 'RefreshToken 无效或已过期', 401);

@@ -56,22 +56,22 @@ export async function handleGameWebSocket(request, env) {
 
   const wm = env.WORLD_MANAGER.get(env.WORLD_MANAGER.idFromName('singleton'));
 
-  /* ---------- 2. 封禁拦截 (P3) ---------- */
-  const banRes = await wm.fetch(`https://wm/banned?uuid=${encodeURIComponent(identity.uuid)}&name=${encodeURIComponent(identity.name)}`);
-  if (banRes.ok) {
-    const { banned } = await banRes.json();
-    if (banned && !isAdmin) {
-      return errorClose(ERROR_CODES.BANNED, '该账号已被封禁, 如有疑问联系管理员');
-    }
+  /* ---------- 2. 封禁拦截 (P3) ----------
+   * wmSafe: DO/D1 故障时降级放行 (fail-open) 并记日志, 绝不让基础设施故障
+   * 演变成握手 500 —— 封禁/维护是"锦上添花", 连接可用性优先。
+   * 依赖完整性请用 GET /debug/selftest 检查, 不在此处阻塞玩家。 */
+  const banRes = await wmSafe(
+    wm.fetch(`https://wm/banned?uuid=${encodeURIComponent(identity.uuid)}&name=${encodeURIComponent(identity.name)}`),
+    'banned'
+  );
+  if (banRes?.banned && !isAdmin) {
+    return errorClose(ERROR_CODES.BANNED, '该账号已被封禁, 如有疑问联系管理员');
   }
 
   /* ---------- 3. 维护模式 (P3) ---------- */
-  const maintRes = await wm.fetch('https://wm/maintenance');
-  if (maintRes.ok) {
-    const { maintenance } = await maintRes.json();
-    if (maintenance && !isAdmin) {
-      return errorClose(ERROR_CODES.MAINTENANCE, '服务器维护中, 稍后再来');
-    }
+  const maintRes = await wmSafe(wm.fetch('https://wm/maintenance'), 'maintenance');
+  if (maintRes?.maintenance && !isAdmin) {
+    return errorClose(ERROR_CODES.MAINTENANCE, '服务器维护中, 稍后再来');
   }
 
   /* ---------- 4. Region 路由 (P2): 显式参数 > 上次区域 > 原点 ---------- */
@@ -83,11 +83,12 @@ export async function handleGameWebSocket(request, env) {
     regionKey = regionParam; // 客户端显式指定 (跨区传送场景)
   } else {
     // P2: 问 WorldManagerDO 要上次区域 (断线重连恢复的关键)
-    const routeRes = await wm.fetch(`https://wm/route?uuid=${encodeURIComponent(identity.uuid)}`);
-    if (routeRes.ok) {
-      const { region: last } = await routeRes.json();
-      if (last && /^-?\d+,-?\d+$/.test(String(last))) regionKey = String(last);
-    }
+    const routeRes = await wmSafe(
+      wm.fetch(`https://wm/route?uuid=${encodeURIComponent(identity.uuid)}`),
+      'route'
+    );
+    const last = routeRes?.region;
+    if (last && /^-?\d+,-?\d+$/.test(String(last))) regionKey = String(last);
   }
   regionKey ??= '0,0';
 
@@ -108,6 +109,24 @@ export async function handleGameWebSocket(request, env) {
 
   const forwarded = new Request(target.toString(), request);
   return regionStub.fetch(forwarded);
+}
+
+/**
+ * WM 调用安全包装: 任何异常/非 2xx 都降级为 null (调用方用可选链判空)
+ * 覆盖三类故障: DO 抛异常 / DO 返回 5xx / JSON 解析失败
+ */
+async function wmSafe(promise, what) {
+  try {
+    const res = await promise;
+    if (!res.ok) {
+      logger.warn('wm_check_degraded', { what, status: res.status });
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    logger.warn('wm_check_failed', { what, error: err.message });
+    return null;
+  }
 }
 
 /** 认证/拦截失败统一错误响应 (升级请求不能带 JSON body 语义, 客户端按状态码处理) */
