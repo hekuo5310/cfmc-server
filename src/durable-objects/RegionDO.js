@@ -1001,7 +1001,17 @@ export class RegionDO {
     const cached = this.chunkCache.get(key);
     if (cached) return cached;
 
-    const loaded = await loadChunk(this.env.WORLD_DB, cx, cz).catch(() => null);
+    let loaded;
+    try {
+      loaded = await loadChunk(this.env.WORLD_DB, cx, cz);
+    } catch (err) {
+      // 查询失败 ≠ 区块不存在。若在此降级生成平地并标脏, persistDirty 会用平地
+      // UPSERT 覆盖真实存档 (例如缺 tile_entities 表时, 每个已存区块 100% 触发)。
+      // 抛错让调用方跳过本次操作 — 两处调用点 (写方块 / 区块下发队列) 均有
+      // try-catch, 且此处不缓存不标脏, 下次输入会自然重试加载。
+      logger.error('chunk_load_fail', { region: this.#regionKey(), chunk: key, error: err?.message });
+      throw err;
+    }
     const chunk = { cx, cz, sections: new Map(), tileEntities: [], isDirty: false };
 
     if (loaded?.found) {
@@ -1016,6 +1026,7 @@ export class RegionDO {
       }
       chunk.tileEntities = loaded.tileEntities;
     } else {
+      // 只有确认 D1 中无此区块 (meta 查不到) 才允许平地生成
       this.#generateFlatTerrain(chunk);
       chunk.isDirty = true;
       this.dirtyChunks.add(key);

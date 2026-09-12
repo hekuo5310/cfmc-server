@@ -463,7 +463,7 @@ npm run deploy       # 自动应用新增 D1 迁移 (幂等), 再部署
 | `wrangler deploy` 报 D1 id 无效 | 手动部署占位符未替换 / id 抄错 | 核对 3.6 的三个占位符；`wrangler d1 list` 比对（一键部署自动回写 id，不会出现） |
 | 部署成功但 `/health` 500 | 绑定缺失（KV 未创建却被 toml 引用 / 自行启用 R2/Queue 后未真正创建） | `npm run tail` 看堆栈；缺什么按 3.4/3.5 补建，或注释对应段落 |
 | WebSocket 握手返回 401 | Token 缺失/过期，或认证模式不匹配 | 检查客户端 `DEFAULT_AUTH_MODE`；`/auth/login` 重新换取 Token |
-| WebSocket 握手返回 500 / 客户端"连接异常断开" | 依赖层故障（绑定缺失 / DO 异常 / 历史版本无顶层兜底） | 打开 `GET /debug/selftest` 逐项看哪项红了，按其 hint 修复；或 `npm run tail` 复现后看 `region_fetch_fail` 堆栈 |
+| WebSocket 握手返回 500 / 客户端"连接异常断开" | 握手链路本身故障（路由/鉴权/DO 升级链） | 打开 `GET /debug/selftest` 看 `handshake.e2e` 项：失败时 detail 会显示服务端返回的**完整错误 body**（客户端 mod 只显示状态码），按内容定位；或 `npm run tail` 复现后看 `region_fetch_fail` 堆栈 |
 | `/debug/selftest` 报"缺表: bans, ..." | D1 库建了但迁移没跑（一键部署不执行 `db:migrate`） | 按 2.1 的建表步骤在 D1 Console 粘贴对应 0001 SQL；或 CLI `npx wrangler d1 execute <库名> --remote --file=<对应SQL> -y` |
 | `wrangler login` 卡住 | 服务器/远程环境无浏览器 | 用 3.2 方式 B 的 API Token + 环境变量 |
 | 本地 `wrangler dev` 报 Queue 配置错误 | 自行启用了 Queue，但本地模拟不支持 producer-only 配置 | `[[queues.producers]]` 默认已注释；若自行启用后遇到，注释掉即可 |

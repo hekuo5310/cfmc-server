@@ -65,6 +65,13 @@ export function handleOptions(_request, env) {
 
 /** 给业务响应追加 CORS 头 */
 export function withCors(response, _request, env) {
+  // ⚠️ WebSocket 升级响应 (101) 必须原样返回!
+  //    new Response(response.body, ...) 重建会丢弃 Response.webSocket 属性 →
+  //    运行时抛 "101 must have webSocket property" → 客户端只见无上下文的 500。
+  //    WS 帧在 TCP 层收发, 浏览器同源策略/CORS 管不到它, 加头也无意义。
+  //    (这就是"自检全绿但握手必 500"的根因, 见 worklog Task 13)
+  if (response.status === 101 || response.webSocket) return response;
+
   const headers = new Headers(response.headers);
   for (const [k, v] of Object.entries(corsHeaders(env))) {
     if (!headers.has(k)) headers.set(k, v);
