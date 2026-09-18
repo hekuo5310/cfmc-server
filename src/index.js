@@ -87,6 +87,10 @@ export default {
 
       // ---------- 3. 统一日志 + CORS 包裹 ----------
       logRequest(request, response, startTime);
+      // ⚠️ 升级响应 (101) 绝不能经 withCors 重建 — 重建会丢 Response.webSocket,
+      //    运行时抛 "101 must have webSocket property" → 客户端只见 500。
+      //    (withCors 内部也有一道同样的防御, 这里提前短路省一次函数调用)
+      if (response.status === 101 || response.webSocket) return response;
       return withCors(response, request, env);
     } catch (err) {
       // 全局兜底: 任何未捕获异常都不能泄漏堆栈给客户端

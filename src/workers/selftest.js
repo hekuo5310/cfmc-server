@@ -72,10 +72,17 @@ export async function handleSelfTest(request, env) {
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         .all();
       const tables = new Set((results ?? []).map((r) => r.name));
-      const need = ['world_meta', 'chunks', 'chunk_sections', 'block_change_log', 'chunk_claims'];
+      // 必须核对 0001_init.sql 的全部 8 张表, 一张都不能少:
+      // 典型事故 — 库里只有部分表但缺 tile_entities 时, loadChunk 对每个已存在
+      // 区块的 TileEntity 查询都会抛错, 部署自检却报"就绪", 运行时才发现。
+      // (entities/scheduled_ticks 同理: 半截迁移必须在这里暴露, 而不是上线后)
+      const need = [
+        'world_meta', 'chunks', 'chunk_sections', 'tile_entities',
+        'entities', 'block_change_log', 'scheduled_ticks', 'chunk_claims',
+      ];
       const absent = need.filter((n) => !tables.has(n));
       if (absent.length > 0) throw new Error(`缺表: ${absent.join(', ')}`);
-      return `5 张关键表齐全 (${need.join(', ')})`;
+      return `8 张表齐全 (${need.join(', ')})`;
     });
 
     /* ---------- 4. KV CACHE 读写 ---------- */
@@ -106,7 +113,33 @@ export async function handleSelfTest(request, env) {
       return `DO 正常 (tps=${j.tps}, 游戏循环=${j.gameLoopRunning})`;
     });
 
-    /* ---------- 7. Secrets 配置提示 (非致命) ---------- */
+    /* ---------- 7. 端到端握手探测 (真实走一遍 /ws/game 升级链) ---------- */
+    await step(checks, 'handshake.e2e', '此项失败 = 握手链路本身有故障 — 把上方 detail 的错误 body 原样反馈, 或 npx wrangler tail 看实时日志', async () => {
+      // 以探针身份向本 Worker 发起真实 WS 升级 (fetch + Upgrade: websocket):
+      //   101         → game.js 鉴权/路由 → RegionDO /connect → 101 全链路可用
+      //   401/403/503 → 链路通, 被认证/封禁/维护规则正常拦截 (非故障)
+      //   5xx         → 把响应体 code/message 原样报出 — 客户端 mod 只显示状态码,
+      //                 看不到 body, 这里是唯一能看到握手错误详情的窗口
+      // 探针用固定 uuid (重复探测覆盖同一条 WM 路由记录, 不产生垃圾条目);
+      // 会短暂进入 region:0,0 并立即退出, DO 收到 close 自动清理会话。
+      const origin = new URL(request.url).origin;
+      const res = await fetch(`${origin}/ws/game?uuid=selftest-probe&name=SelftestProbe`, {
+        headers: { Upgrade: 'websocket' },
+      });
+      if (res.status === 101) {
+        // 出站升级的客户端套接字必须 accept, 否则运行时报错; 立即关闭即完成清理
+        try { res.webSocket?.accept(); res.webSocket?.close(1000, 'selftest done'); } catch { /* 对端已断, 无妨 */ }
+        return '端到端握手成功 (101) — /ws/game → RegionDO 全链路正常, 可以连接';
+      }
+      let body = '';
+      try { body = JSON.stringify(await res.json()); } catch { body = (await res.text().catch(() => '')).slice(0, 200); }
+      if (res.status === 401 || res.status === 403 || res.status === 503) {
+        return `链路可达, 被业务规则拦截 (${res.status} ${body}) — 认证/封禁/维护按配置工作, 非故障`;
+      }
+      throw new Error(`握手返回 ${res.status}: ${body || '(无响应体)'}`);
+    });
+
+    /* ---------- 8. Secrets 配置提示 (非致命) ---------- */
     checks.push({
       name: 'secrets.hint',
       ok: true,
